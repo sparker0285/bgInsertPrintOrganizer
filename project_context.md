@@ -265,3 +265,14 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
 - **Calculation:** 60 seconds / 15 requests = 4 seconds per request.
 - **Plan:** Increase `time.sleep(1)` to `time.sleep(5)` to be safe (12 RPM).
 - **Also:** Handle 429 gracefully by stopping the batch early instead of erroring out all subsequent items.
+- **New Request:**
+    - Add "Never Print" option to exclude games.
+    - Store "Never Print" list in Azure (`excluded_games.json`).
+    - Allow removing items from both "Printed" and "Never Print" lists via UI.
+    - Sidebar management for these lists.
+- **Implementation:**
+    - Added `AZURE_EXCLUDED_BLOB`.
+    - Added `get_list_from_azure` helper.
+    - Updated `main` to load excluded list and filter priority games.
+    - Added "Never Print" button to game row.
+    - Added "Manage Lists" expander in sidebar with delete buttons.

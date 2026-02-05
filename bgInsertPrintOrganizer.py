@@ -15,6 +15,7 @@ DAYS_SINCE_LAST_PLAY = 365
 AZURE_CONTAINER_NAME = "bgg-data"
 AZURE_COLLECTION_BLOB = "collection.json"
 AZURE_PRINTED_BLOB = "printed_games.json"
+AZURE_EXCLUDED_BLOB = "excluded_games.json"
 AZURE_SEARCH_RESULTS_BLOB = "search_results_v2.json"
 
 class BggGame:
@@ -65,16 +66,16 @@ def load_json_from_azure(blob_name):
         return json.loads(blob_client.download_blob().readall())
     except Exception: return None
 
-def get_printed_games():
-    printed_games = load_json_from_azure(AZURE_PRINTED_BLOB)
-    if printed_games is None:
+def get_list_from_azure(blob_name, fallback_file=None):
+    data = load_json_from_azure(blob_name)
+    if data is None and fallback_file:
         try:
-            with open("printed_games.txt", "r") as f:
-                printed_games = [line.strip() for line in f.readlines() if line.strip()]
-            save_json_to_azure(printed_games, AZURE_PRINTED_BLOB)
+            with open(fallback_file, "r") as f:
+                data = [line.strip() for line in f.readlines() if line.strip()]
+            save_json_to_azure(data, blob_name)
         except FileNotFoundError:
-            printed_games = []
-    return printed_games
+            data = []
+    return data or []
 
 # --- BGG Logic ---
 def get_auth_headers():
@@ -169,42 +170,27 @@ def scrape_printables_details(url):
 
 @st.cache_data(ttl=3600)
 def get_valid_gemini_model(api_key):
-    """Dynamically fetches available models and picks the best one."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         response = requests.get(url)
-        if response.status_code != 200:
-            return None, f"Error listing models: {response.status_code}"
-        
+        if response.status_code != 200: return None, f"Error listing models: {response.status_code}"
         data = response.json()
         models = data.get('models', [])
-        
-        # Priority list
         priorities = ["gemini-1.5-flash", "gemini-flash", "gemini-1.5-pro", "gemini-pro"]
-        
-        # 1. Try to find exact matches or partial matches from priority list
         for p in priorities:
             for m in models:
-                if p in m['name']:
-                    return m['name'], None
-        
-        # 2. Fallback: any gemini model
+                if p in m['name']: return m['name'], None
         for m in models:
-            if "gemini" in m['name'] and "vision" not in m['name']: # Avoid vision-only if any
-                return m['name'], None
-                
+            if "gemini" in m['name'] and "vision" not in m['name']: return m['name'], None
         return None, "No suitable Gemini model found."
-    except Exception as e:
-        return None, f"Exception listing models: {e}"
+    except Exception as e: return None, f"Exception listing models: {e}"
 
 def evaluate_insert_with_ai(game_name, search_url, site):
     api_key = st.secrets.get("google_api_key")
     if not api_key: return 0, "Missing API Key"
 
-    # Get a valid model name dynamically
     model_name, error_msg = get_valid_gemini_model(api_key)
-    if not model_name:
-        return 5, f"AI Setup Error: {error_msg}"
+    if not model_name: return 5, f"AI Setup Error: {error_msg}"
 
     details_text = ""
     if site == "Thingiverse" and "thingiverse.com/thing:" in search_url:
@@ -227,16 +213,14 @@ def evaluate_insert_with_ai(game_name, search_url, site):
         "If you have absolutely no info, guess a conservative 5."
     )
 
-    # Construct URL using the dynamically found model name
-    # model_name usually comes as "models/gemini-pro", so we use it directly in the path
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
         response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            return 5, f"AI API Error ({model_name}): {response.status_code}"
+        if response.status_code == 429: return 5, "AI Rate Limit (429)"
+        if response.status_code != 200: return 5, f"AI API Error ({model_name}): {response.status_code}"
         
         result = response.json()
         try:
@@ -245,11 +229,8 @@ def evaluate_insert_with_ai(game_name, search_url, site):
             elif "```" in text: text = text.split("```")[1].split("```")[0]
             data = json.loads(text)
             return data.get("score", 5), data.get("summary", "No summary.")
-        except (KeyError, IndexError, json.JSONDecodeError):
-             return 5, "AI Response Parse Error"
-             
-    except Exception as e:
-        return 5, f"AI Error: {str(e)[:50]}"
+        except: return 5, "AI Response Parse Error"
+    except Exception as e: return 5, f"AI Error: {str(e)[:50]}"
 
 def find_best_candidate(game_name):
     search_term = urllib.parse.quote_plus(f"{game_name} insert")
@@ -284,12 +265,17 @@ def process_ai_evaluations(results_list, limit=20):
         if not needs_eval and "AI Error" in str(item.get("AI_Summary", "")): needs_eval = True
         if not needs_eval and "AI API Error" in str(item.get("AI_Summary", "")): needs_eval = True
         if not needs_eval and "AI Setup Error" in str(item.get("AI_Summary", "")): needs_eval = True
+        if not needs_eval and "AI Rate Limit" in str(item.get("AI_Summary", "")): needs_eval = True
 
         if needs_eval:
             status_text.text(f"Evaluating {item['Game Title']} with AI...")
             candidate_url, site = find_best_candidate(item['Game Title'])
             score, summary = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
             
+            if "Rate Limit" in str(summary):
+                status_text.warning("AI Rate Limit Reached. Stopping batch.")
+                break # Stop processing this batch
+
             item["AI_Score"] = score
             item["AI_Summary"] = summary
             item["AI_Evaluated"] = True
@@ -299,7 +285,7 @@ def process_ai_evaluations(results_list, limit=20):
             updated = True
             count += 1
             progress_bar.progress(count / limit)
-            time.sleep(1) 
+            time.sleep(5) # Increased delay to avoid 429
             
     st.session_state.batch_run_complete = True
     progress_bar.empty()
@@ -312,7 +298,8 @@ def main():
     st.title("Insert Curator")
     
     # Load Data
-    printed_games = get_printed_games() or []
+    printed_games = get_list_from_azure(AZURE_PRINTED_BLOB, "printed_games.txt")
+    excluded_games = get_list_from_azure(AZURE_EXCLUDED_BLOB)
     collection_data = load_json_from_azure(AZURE_COLLECTION_BLOB)
     search_results = load_json_from_azure(AZURE_SEARCH_RESULTS_BLOB) or []
 
@@ -324,12 +311,33 @@ def main():
             save_json_to_azure([g.to_dict() for g in collection], AZURE_COLLECTION_BLOB)
             st.rerun()
             
-    if st.sidebar.button("Show Printed Games List"):
-        st.session_state.show_printed_list = not st.session_state.get("show_printed_list", False)
-
-    if st.session_state.get("show_printed_list"):
-        st.sidebar.markdown("### Already Printed")
-        st.sidebar.dataframe(printed_games, hide_index=True, use_container_width=True)
+    # Manage Lists in Sidebar
+    with st.sidebar.expander("Manage Lists"):
+        st.write("### Already Printed")
+        if printed_games:
+            for g in printed_games:
+                c1, c2 = st.columns([4, 1])
+                c1.write(g)
+                if c2.button("❌", key=f"del_print_{g}"):
+                    printed_games.remove(g)
+                    save_json_to_azure(printed_games, AZURE_PRINTED_BLOB)
+                    st.rerun()
+        else:
+            st.write("None")
+            
+        st.divider()
+        
+        st.write("### Never Print (Excluded)")
+        if excluded_games:
+            for g in excluded_games:
+                c1, c2 = st.columns([4, 1])
+                c1.write(g)
+                if c2.button("❌", key=f"del_excl_{g}"):
+                    excluded_games.remove(g)
+                    save_json_to_azure(excluded_games, AZURE_EXCLUDED_BLOB)
+                    st.rerun()
+        else:
+            st.write("None")
 
     # Initial Load / Sync
     if not collection_data:
@@ -344,10 +352,21 @@ def main():
     if collection_data:
         games = [BggGame.from_dict(d) for d in collection_data]
         cutoff = datetime.now() - timedelta(days=DAYS_SINCE_LAST_PLAY)
-        priority_games = [g for g in games if g.last_played and g.last_played > cutoff and g.name not in printed_games]
+        
+        # Filter out both printed AND excluded games
+        priority_games = [
+            g for g in games 
+            if g.last_played and g.last_played > cutoff 
+            and g.name not in printed_games 
+            and g.name not in excluded_games
+        ]
         
         if not priority_games:
-            priority_games = sorted([g for g in games if g.name not in printed_games], key=lambda x: x.num_plays, reverse=True)[:50]
+            priority_games = sorted(
+                [g for g in games if g.name not in printed_games and g.name not in excluded_games], 
+                key=lambda x: x.num_plays, 
+                reverse=True
+            )[:50]
         
         cached_map = {item["Game Title"]: item for item in search_results}
         final_list = []
@@ -410,6 +429,13 @@ def main():
                         save_json_to_azure(new_results, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
                     
+                    if st.button("🚫 Never Print", key=f"excl_{i}", help="Exclude from future lists"):
+                        excluded_games.append(item['Game Title'])
+                        save_json_to_azure(excluded_games, AZURE_EXCLUDED_BLOB)
+                        new_results = [r for r in final_list if r['Game Title'] != item['Game Title']]
+                        save_json_to_azure(new_results, AZURE_SEARCH_RESULTS_BLOB)
+                        st.rerun()
+
                     if st.button("🔄 Re-Eval AI", key=f"reeval_{i}"):
                         with st.spinner("Re-evaluating..."):
                             candidate_url, site = find_best_candidate(item['Game Title'])

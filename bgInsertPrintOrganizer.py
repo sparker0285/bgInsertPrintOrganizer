@@ -245,7 +245,9 @@ def find_best_candidate(game_name):
             if not full_link.startswith('http'): full_link = "https://www.thingiverse.com" + full_link
             return full_link, "Thingiverse"
     except: pass
-    return f"https://makerworld.com/en/search?keyword={search_term}", "MakerWorld"
+    
+    # MakerWorld search URL format
+    return f"https://makerworld.com/en/search/models?keyword={search_term}", "MakerWorld"
 
 def process_ai_evaluations(results_list, limit=20):
     count = 0
@@ -390,7 +392,7 @@ def main():
                     "AI_Score": 0,
                     "AI_Summary": "Pending...",
                     "Priority_Score": game.num_plays,
-                    "Search URL": f"https://makerworld.com/en/search?keyword={urllib.parse.quote_plus(game.name + ' insert')}"
+                    "Search URL": f"https://makerworld.com/en/search/models?keyword={urllib.parse.quote_plus(game.name + ' insert')}"
                 })
         
         final_list.sort(key=lambda x: x["Priority_Score"], reverse=True)

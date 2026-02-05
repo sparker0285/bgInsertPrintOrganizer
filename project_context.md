@@ -276,3 +276,50 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
     - Updated `main` to load excluded list and filter priority games.
     - Added "Never Print" button to game row.
     - Added "Manage Lists" expander in sidebar with delete buttons.
+- **Issue:** MakerWorld links are 404.
+- **Cause:** The search URL format `https://makerworld.com/en/search?keyword=...` might be outdated or incorrect.
+- **Fix:** Updated to `https://makerworld.com/en/search/models?keyword=...`.
+- **New Request:**
+    - Add ability to manually paste a "good model link" for a game.
+    - This should override the auto-discovered search link.
+    - **Plan:**
+        - Add a text input field inside the game expander: "Manual Model Link".
+        - Add a "Save Link" button.
+        - When saved, update the `Candidate_URL` (or a new field `Manual_URL`) in the game's data structure.
+        - Save to Azure.
+        - Use this manual URL for the "Open Model Page" link and for future AI evaluations (if re-eval is clicked).
+        - **UI:** Inside the expander, maybe below the current link or in a new column/section.
+- **New Request:**
+    - Add "Colors Used" tracking for each game.
+    - **Question:** Can this be extracted from model files?
+    - **Answer:** Not easily from just a URL or description. 3D model files (STL/3MF) don't inherently have "colors" unless it's a multi-color 3MF (like Bambu/MakerWorld). Even then, parsing that from a URL without downloading and inspecting the file is very hard/impossible via simple scraping.
+    - **Alternative:** The user likely needs to manually enter this, OR we can ask the AI to infer it from the description/images (if we could see images).
+    - **Plan:** Add a manual text input/multiselect for "Colors Used" in the expander.
+    - **Refinement:** User asked "Is that information that you can get from the model files themselves?".
+    - **Response:** I should clarify that it's difficult to automate reliably. I will add a manual field for it.
+    - **Implementation:**
+        - Add `Colors` field to `BggGame` or the dictionary in `search_results`.
+        - Add UI in expander to edit/save colors.
+        - Maybe a multiselect with common colors (Black, White, Grey, Red, Blue, etc.) + "Other".
+- **New Request:**
+    - Reduce batch size to 10.
+    - Add a "Run AI Updates" button in config.
+    - When clicked, ask how many games to process (number input).
+    - Run loop with 20s delay.
+    - Handle 429: wait 60s, retry once, then stop if failed again.
+    - This allows "bulk processing" in background.
+    - Normal behavior: grab 10 games on load.
+- **Implementation:**
+    - Update `process_ai_evaluations` to accept `delay` and `retry_on_429` params.
+    - Update `main` to call `process_ai_evaluations(limit=10, delay=5)` on load.
+    - Add sidebar section "AI Bulk Processing".
+    - Add number input "Games to Process" and button "Start Bulk Processing".
+    - On button click: call `process_ai_evaluations(limit=user_limit, delay=20, retry_on_429=True)`.
+    - Implement retry logic in `evaluate_insert_with_ai` or wrapper.
+- **Status:** User confirms bulk processing works.
+- **New Request:**
+    - Wipe out API information for any game that shows "AI API Error: 404".
+    - This forces a retry on the next run.
+- **Implementation:**
+    - In `main`, when iterating `priority_games`, check if `AI_Summary` contains "AI API Error" and "404".
+    - If so, reset `AI_Evaluated` to `False`, `AI_Score` to 0, and `AI_Summary` to "Pending Retry...".

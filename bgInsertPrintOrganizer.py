@@ -149,24 +149,39 @@ def scrape_thingiverse_details(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code != 200: return None
+        if resp.status_code != 200: return None, []
         soup = BeautifulSoup(resp.content, 'html.parser')
         desc_div = soup.find('div', class_=re.compile(r'description', re.I))
-        if desc_div: return desc_div.get_text(strip=True)[:2000]
-        return ""
-    except: return None
+        desc = desc_div.get_text(strip=True)[:2000] if desc_div else ""
+        
+        # Try to find images
+        images = []
+        for img in soup.find_all('img', class_=re.compile(r'gallery', re.I)):
+            if img.get('src'): images.append(img.get('src'))
+        
+        return desc, images[:3] # Return top 3 images
+    except: return None, []
 
 def scrape_printables_details(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code != 200: return None
+        if resp.status_code != 200: return None, []
         soup = BeautifulSoup(resp.content, 'html.parser')
         desc_div = soup.find('div', {'id': 'description'})
         if not desc_div: desc_div = soup.find('div', class_=re.compile(r'description', re.I))
-        if desc_div: return desc_div.get_text(strip=True)[:2000]
-        return ""
-    except: return None
+        desc = desc_div.get_text(strip=True)[:2000] if desc_div else ""
+        
+        # Try to find images (Printables uses complex gallery, might be hard to scrape simply)
+        images = []
+        # Basic attempt
+        for img in soup.find_all('img'):
+            src = img.get('src')
+            if src and 'media.printables.com' in src:
+                images.append(src)
+        
+        return desc, images[:3]
+    except: return None, []
 
 @st.cache_data(ttl=3600)
 def get_valid_gemini_model(api_key):
@@ -187,16 +202,18 @@ def get_valid_gemini_model(api_key):
 
 def evaluate_insert_with_ai(game_name, search_url, site):
     api_key = st.secrets.get("google_api_key")
-    if not api_key: return 0, "Missing API Key"
+    if not api_key: return 0, "Missing API Key", ""
 
     model_name, error_msg = get_valid_gemini_model(api_key)
-    if not model_name: return 5, f"AI Setup Error: {error_msg}"
+    if not model_name: return 5, f"AI Setup Error: {error_msg}", ""
 
     details_text = ""
+    images = []
+    
     if site == "Thingiverse" and "thingiverse.com/thing:" in search_url:
-        details_text = scrape_thingiverse_details(search_url)
+        details_text, images = scrape_thingiverse_details(search_url)
     elif site == "Printables" and "printables.com/model" in search_url:
-        details_text = scrape_printables_details(search_url)
+        details_text, images = scrape_printables_details(search_url)
     
     context = f"Game: {game_name}. Site: {site}. URL: {search_url}. "
     if details_text: context += f"Description Snippet: {details_text}"
@@ -207,9 +224,11 @@ def evaluate_insert_with_ai(game_name, search_url, site):
         "Evaluate the likely quality and utility of a 3D printed insert for this board game. "
         "Consider factors like: does this game need an insert? Are there known good designs? "
         "If you have description text above, analyze it for keywords like 'sleeved cards', 'vertical storage', 'lid lift'. "
+        "Also, try to infer the filament colors used or recommended from the description (e.g. 'printed in black and red'). "
         "Provide a JSON response with:\n"
         "- score: (integer 1-10, where 10 is essential/perfect design)\n"
         "- summary: (short 1-sentence summary of why)\n"
+        "- colors: (string, inferred colors or 'Unknown')\n"
         "If you have absolutely no info, guess a conservative 5."
     )
 
@@ -219,8 +238,8 @@ def evaluate_insert_with_ai(game_name, search_url, site):
 
     try:
         response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 429: return 5, "AI Rate Limit (429)"
-        if response.status_code != 200: return 5, f"AI API Error ({model_name}): {response.status_code}"
+        if response.status_code == 429: return 5, "AI Rate Limit (429)", ""
+        if response.status_code != 200: return 5, f"AI API Error ({model_name}): {response.status_code}", ""
         
         result = response.json()
         try:
@@ -228,9 +247,9 @@ def evaluate_insert_with_ai(game_name, search_url, site):
             if "```json" in text: text = text.split("```json")[1].split("```")[0]
             elif "```" in text: text = text.split("```")[1].split("```")[0]
             data = json.loads(text)
-            return data.get("score", 5), data.get("summary", "No summary.")
-        except: return 5, "AI Response Parse Error"
-    except Exception as e: return 5, f"AI Error: {str(e)[:50]}"
+            return data.get("score", 5), data.get("summary", "No summary."), data.get("colors", "")
+        except: return 5, "AI Response Parse Error", ""
+    except Exception as e: return 5, f"AI Error: {str(e)[:50]}", ""
 
 def find_best_candidate(game_name):
     search_term = urllib.parse.quote_plus(f"{game_name} insert")
@@ -245,15 +264,14 @@ def find_best_candidate(game_name):
             if not full_link.startswith('http'): full_link = "https://www.thingiverse.com" + full_link
             return full_link, "Thingiverse"
     except: pass
-    
-    # MakerWorld search URL format
     return f"https://makerworld.com/en/search/models?keyword={search_term}", "MakerWorld"
 
-def process_ai_evaluations(results_list, limit=20):
+def process_ai_evaluations(results_list, limit=10, delay=5, retry_on_429=False):
     count = 0
     updated = False
     
-    if st.session_state.get("batch_run_complete", False):
+    # If not bulk mode (retry_on_429=False), check session state
+    if not retry_on_429 and st.session_state.get("batch_run_complete", False):
         return results_list, False
 
     progress_bar = st.progress(0)
@@ -263,33 +281,55 @@ def process_ai_evaluations(results_list, limit=20):
         if count >= limit: break
         
         needs_eval = not item.get("AI_Evaluated", False)
-        if not needs_eval and "AI Config Error" in str(item.get("AI_Summary", "")): needs_eval = True
-        if not needs_eval and "AI Error" in str(item.get("AI_Summary", "")): needs_eval = True
-        if not needs_eval and "AI API Error" in str(item.get("AI_Summary", "")): needs_eval = True
-        if not needs_eval and "AI Setup Error" in str(item.get("AI_Summary", "")): needs_eval = True
-        if not needs_eval and "AI Rate Limit" in str(item.get("AI_Summary", "")): needs_eval = True
+        # Retry errors
+        if not needs_eval and any(x in str(item.get("AI_Summary", "")) for x in ["AI Config Error", "AI Error", "AI API Error", "AI Setup Error", "AI Rate Limit"]):
+            needs_eval = True
 
         if needs_eval:
             status_text.text(f"Evaluating {item['Game Title']} with AI...")
-            candidate_url, site = find_best_candidate(item['Game Title'])
-            score, summary = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
             
+            # Use Manual URL if available
+            if item.get("Manual_URL"):
+                candidate_url = item["Manual_URL"]
+                site = "Manual"
+                if "thingiverse" in candidate_url: site = "Thingiverse"
+                elif "printables" in candidate_url: site = "Printables"
+                elif "makerworld" in candidate_url: site = "MakerWorld"
+            else:
+                candidate_url, site = find_best_candidate(item['Game Title'])
+            
+            score, summary, colors = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
+            
+            # Handle 429
             if "Rate Limit" in str(summary):
-                status_text.warning("AI Rate Limit Reached. Stopping batch.")
-                break # Stop processing this batch
+                if retry_on_429:
+                    status_text.warning("Rate Limit hit. Waiting 60s...")
+                    time.sleep(60)
+                    # Retry once
+                    score, summary, colors = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
+                    if "Rate Limit" in str(summary):
+                        status_text.error("Rate Limit hit again. Stopping.")
+                        break
+                else:
+                    status_text.warning("AI Rate Limit Reached. Stopping batch.")
+                    break 
 
             item["AI_Score"] = score
             item["AI_Summary"] = summary
             item["AI_Evaluated"] = True
             item["Candidate_URL"] = candidate_url
             item["Priority_Score"] = item["Plays"] + item["AI_Score"]
+            if colors and not item.get("Colors"): # Only update if empty
+                item["Colors"] = colors
             
             updated = True
             count += 1
             progress_bar.progress(count / limit)
-            time.sleep(5) # Increased delay to avoid 429
+            time.sleep(delay) 
             
-    st.session_state.batch_run_complete = True
+    if not retry_on_429:
+        st.session_state.batch_run_complete = True
+        
     progress_bar.empty()
     status_text.empty()
     return results_list, updated
@@ -341,6 +381,13 @@ def main():
         else:
             st.write("None")
 
+    # Bulk AI Processing
+    with st.sidebar.expander("AI Bulk Processing"):
+        bulk_qty = st.number_input("Games to Process", min_value=1, max_value=100, value=10)
+        if st.button("Start Bulk Processing"):
+            st.session_state.bulk_processing = True
+            st.session_state.bulk_qty = bulk_qty
+
     # Initial Load / Sync
     if not collection_data:
         st.info("Fetching collection for the first time...")
@@ -355,7 +402,6 @@ def main():
         games = [BggGame.from_dict(d) for d in collection_data]
         cutoff = datetime.now() - timedelta(days=DAYS_SINCE_LAST_PLAY)
         
-        # Filter out both printed AND excluded games
         priority_games = [
             g for g in games 
             if g.last_played and g.last_played > cutoff 
@@ -378,6 +424,13 @@ def main():
                 existing = cached_map[game.name]
                 existing["Plays"] = game.num_plays
                 existing["Last Played"] = game.last_played.strftime('%Y-%m-%d') if game.last_played else "N/A"
+                
+                # Wipe out 404 errors to force retry
+                if "AI API Error" in str(existing.get("AI_Summary", "")) and "404" in str(existing.get("AI_Summary", "")):
+                    existing["AI_Evaluated"] = False
+                    existing["AI_Score"] = 0
+                    existing["AI_Summary"] = "Pending Retry..."
+                
                 if existing.get("AI_Score"):
                     existing["Priority_Score"] = existing["Plays"] + existing["AI_Score"]
                 else:
@@ -397,8 +450,19 @@ def main():
         
         final_list.sort(key=lambda x: x["Priority_Score"], reverse=True)
         
-        # Batch AI Evaluation
-        final_list, updated = process_ai_evaluations(final_list, limit=20)
+        # Handle Bulk Processing Trigger
+        if st.session_state.get("bulk_processing", False):
+            qty = st.session_state.get("bulk_qty", 10)
+            st.info(f"Starting bulk processing of {qty} games... This may take a while.")
+            final_list, updated = process_ai_evaluations(final_list, limit=qty, delay=20, retry_on_429=True)
+            if updated:
+                save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
+            st.session_state.bulk_processing = False
+            st.success("Bulk processing complete!")
+            st.rerun()
+
+        # Normal Batch AI Evaluation (on load)
+        final_list, updated = process_ai_evaluations(final_list, limit=10, delay=5)
         if updated:
             save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
 
@@ -413,14 +477,29 @@ def main():
                 
                 with c1:
                     st.markdown("### Model Link")
-                    url = item.get('Candidate_URL', item['Search URL'])
-                    st.markdown(f"🔗 [Open Model Page]({url})")
-                    st.caption(f"Source: {url}")
+                    current_url = item.get('Manual_URL') or item.get('Candidate_URL') or item['Search URL']
+                    st.markdown(f"🔗 [Open Model Page]({current_url})")
+                    
+                    # Manual Link Override
+                    new_url = st.text_input("Manual Model Link", value=item.get('Manual_URL', ''), key=f"url_{i}")
+                    if st.button("Save Link", key=f"save_url_{i}"):
+                        item['Manual_URL'] = new_url
+                        item['Candidate_URL'] = new_url # Update candidate too for AI
+                        item['AI_Evaluated'] = False # Force re-eval with new link
+                        save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
+                        st.rerun()
 
                 with c2:
                     st.markdown("### AI Analysis")
                     st.metric("Quality Score", f"{item['AI_Score']}/10")
                     st.info(item['AI_Summary'])
+                    
+                    # Colors
+                    st.markdown("### Colors")
+                    colors = st.text_input("Colors Used", value=item.get('Colors', ''), key=f"colors_{i}")
+                    if colors != item.get('Colors', ''):
+                        item['Colors'] = colors
+                        save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
 
                 with c3:
                     st.markdown("### Actions")
@@ -440,13 +519,19 @@ def main():
 
                     if st.button("🔄 Re-Eval AI", key=f"reeval_{i}"):
                         with st.spinner("Re-evaluating..."):
-                            candidate_url, site = find_best_candidate(item['Game Title'])
-                            score, summary = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
+                            # Use manual URL if set
+                            candidate_url = item.get('Manual_URL')
+                            site = "Manual"
+                            if not candidate_url:
+                                candidate_url, site = find_best_candidate(item['Game Title'])
+                            
+                            score, summary, colors = evaluate_insert_with_ai(item['Game Title'], candidate_url, site)
                             item["AI_Score"] = score
                             item["AI_Summary"] = summary
                             item["AI_Evaluated"] = True
                             item["Candidate_URL"] = candidate_url
                             item["Priority_Score"] = item["Plays"] + item["AI_Score"]
+                            if colors: item["Colors"] = colors
                             save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
 

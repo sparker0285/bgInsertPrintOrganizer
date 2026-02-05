@@ -72,3 +72,196 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
     - The `fetch_from_api` function (for collection) *does* try to read `numplays` from the collection item, but it doesn't seem to rely on `lastplayed` from there for the "last played" logic in the same way.
     - **Key Takeaway:** To get accurate "last played" dates, I must fetch the play history from `/plays` and map the most recent play date to each game in the collection.
 - **Implementation:** Updated `bgInsertPrintOrganizer.py` to include `fetch_play_history` which iterates through the first 5 pages of plays (to keep it fast but get recent stuff) and updates the `last_played` date for games in the collection. It also uses the correct `Bearer` token auth.
+- **Status:** User confirms the app works now.
+- **New Request:** Add a button to the results grid to add a game to the "Already Printed" list. This list should be saved to Azure (or local file) and loaded on startup.
+- **Plan:**
+    1.  Modify `get_printed_games` and `save_printed_games` to use Azure Storage (similar to `collection.json`). Let's call it `printed_games.json`.
+    2.  Update the UI to display the search results not just as a static dataframe, but as a list of items with an "Add to Printed" button for each. Streamlit's `st.dataframe` doesn't support buttons inside cells easily. I might need to use `st.data_editor` (with a boolean column) or render rows manually with `st.columns`.
+    3.  Given the requirement "button to the grid of results", `st.data_editor` with a checkbox column "Printed?" is the most modern Streamlit way. When the user checks it, I can detect the change and update the list.
+    4.  Alternatively, I can render a button next to each row if I iterate through them.
+    5.  Let's go with `st.data_editor` if possible, or a simple "Add" button next to the game title if I render them as cards/rows.
+    6.  Actually, the user said "button to the grid of results". A dataframe with a checkbox column is probably the cleanest "grid" approach.
+    7.  Wait, `st.data_editor` allows editing. If I add a "Printed" boolean column, the user can check it. Then I need a "Save" button or auto-save logic.
+    8.  Let's try to make it seamless.
+    9.  Also, need to migrate the existing `printed_games.txt` logic to Azure if the user wants it there.
+- **Update:** User clarified they want to persist the "Top Games to Find Inserts For" list to Azure as well, to avoid re-running queries.
+- **Implementation:**
+    - Added `AZURE_SEARCH_RESULTS_BLOB = "search_results.json"`.
+    - Added `AZURE_PRINTED_BLOB = "printed_games.json"`.
+    - Implemented `save_json_to_azure` and `load_json_from_azure` generic helpers.
+    - Updated `main()` to:
+        - Load `printed_games` from Azure (migrating from txt if needed).
+        - Load `search_results` from Azure if not refreshing.
+        - If refreshing or no cache, run the search and save to Azure.
+        - Display results using `st.data_editor` with a "Printed?" checkbox column.
+        - When "Printed?" is checked:
+            - Add game to `printed_games` list and save to Azure.
+            - Remove game from `search_results` list and save to Azure.
+            - Rerun the app to refresh the view.
+- **Status:** User confirms checkbox works.
+- **New Request:**
+    - Remove "Result Count" column.
+    - Add a "Priority Score" metric.
+    - Use Gemini AI (free tier) to evaluate insert quality based on description and comments.
+    - **Logic:**
+        1.  Sort games by Play Count (heavy weight).
+        2.  For the top 20 games that haven't been evaluated yet:
+            - Find the "best" candidate insert (e.g., most downloads) from MakerWorld/Thingiverse/Printables.
+            - Send its description/comments to Gemini.
+            - Get a quality score (1-10) and sentiment summary.
+        3.  Save this AI evaluation to Azure so it's not re-run.
+        4.  Formula: Play Heavy (e.g., Plays + AI Score).
+        5.  UI: Add a "Re-evaluate" button for individual rows.
+        6.  Process: Automatically grab the next 20 unevaluated games on each run.
+- **Implementation:**
+    - Added `google-generativeai` to `requirements.txt`.
+    - Updated `bgInsertPrintOrganizer.py`:
+        - Added `evaluate_insert_with_ai` function using Gemini.
+        - Added `scrape_thingiverse_details` and `scrape_printables_details` (basic scraping).
+        - Added `find_best_candidate` to try and find a specific model URL (prioritizing Thingiverse for scraping ease, but defaulting to MakerWorld search if needed).
+        - Implemented batch processing (20 items) in `process_ai_evaluations`.
+        - Updated UI to use `st.columns` for a custom row layout (Game Link, Plays, Score, AI Score, Summary, Done Button, Re-Eval Button).
+        - Removed `st.data_editor` in favor of this custom layout to support the "Re-eval" button requirement.
+- **Issue:** User reports `NameError: name 'get_printed_games' is not defined`.
+- **Cause:** I accidentally removed the `get_printed_games` function definition when refactoring the code, but I'm still calling it in `main()`.
+- **Fix:** I need to restore the `get_printed_games` function.
+- **Issue:** User reports `Gemini Config Error: module 'google.generativeai' has no attribute 'GenerativeModel'`.
+- **Cause:** This usually happens if the installed version of `google-generativeai` is too old or if there's a namespace conflict. The `GenerativeModel` class was introduced in newer versions (0.3.0+).
+- **Action:** I should check the installed version or try to upgrade it. Since I can't check the version easily, I'll assume I need to force an upgrade or use the older API style if the environment is restricted. However, `GenerativeModel` is the standard way now.
+- **Alternative:** It's possible the user has an old version installed globally or in the venv.
+- **Fix:** I will ask the user to upgrade the package.
+- **Wait:** I can also try to use `genai.configure` and then `genai.generate_text` (legacy) if `GenerativeModel` isn't found, but it's better to get the right version.
+- **Actually:** The error `module 'google.generativeai' has no attribute 'GenerativeModel'` is very specific. It means the import worked but the class isn't there.
+- **Hypothesis:** The installed version is < 0.3.0.
+- **Plan:** Ask user to run `pip install --upgrade google-generativeai`.
+- **Issue:** User says "In installed google-generativeai and I still get the exact same error".
+- **Analysis:** This is strange. It might be a caching issue, or the user is running the command in the wrong environment (not the `.venv`). Or maybe `google-generativeai` is conflicting with another package.
+- **Alternative Fix:** I can switch to the legacy API call `genai.chat` or `genai.generate_text` if available, OR I can try to debug the environment.
+- **Better Fix:** I'll try to use `genai.configure` and then check what's available. But since I can't interactively debug, I should probably try to use the older API method as a fallback if `GenerativeModel` fails.
+- **Wait:** The older API uses `genai.generate_text`.
+- **Let's try this:** I will modify the code to try `GenerativeModel` first, and if that fails (AttributeError), fall back to `genai.generate_text` or similar.
+- **Actually:** If the user just installed it, maybe they need to restart the Streamlit server? They probably did.
+- **Let's check `pip list`** if I could, but I can't.
+- **Hypothesis:** Maybe the package name is `google-generativeai` but the import is `google.generativeai`. That is correct.
+- **Maybe:** The user has a file named `google.py` or `google/generativeai.py` in their project that is shadowing the library? Unlikely in this structure.
+- **Let's try the legacy method.** It's safer if the environment is stubborn.
+- **Legacy Method:**
+  ```python
+  response = genai.generate_text(
+      model='models/text-bison-001',
+      prompt=prompt
+  )
+  return response.result
+  ```
+  But `gemini-pro` or `gemini-1.5-flash` requires the new API. If they have an old library, they can't use Gemini models easily.
+- **Wait:** If they have a *very* old version, they might not even have `generate_text`.
+- **Let's try to force a specific version in requirements.txt.** `google-generativeai>=0.5.0`.
+- **Action:** Update `requirements.txt` to force a newer version, and ask user to install again. This is the most robust fix. If they just ran `pip install google-generativeai`, it might have satisfied a cached requirement.
+- **Issue:** User still gets the error after forcing reinstall.
+- **Action:** Document the issue in `project_context.md` as requested.
+- **Next Steps (for later):**
+    1.  Verify python environment (is `.venv` actually active?).
+    2.  Check for file shadowing (e.g., a local `google.py`).
+    3.  Try a completely clean venv.
+    4.  Fallback to `requests` call to Gemini API REST endpoint directly if the SDK is broken.
+- **Update:** User provided `bowlingAssistantApp.py` which uses `google.generativeai` successfully.
+- **Analysis of `bowlingAssistantApp.py`:**
+    - It imports `google.generativeai as genai`.
+    - It calls `genai.configure(api_key=api_key)`.
+    - It calls `model = genai.GenerativeModel('models/gemini-flash-latest')`.
+    - It calls `response = model.generate_content(prompt)`.
+    - **Crucially:** This code is *identical* to what I wrote in `bgInsertPrintOrganizer.py`.
+    - **Conclusion:** If `bowlingAssistantApp.py` works in the *same environment*, then my code should work. If it doesn't, there must be a subtle difference or the user is running them in different environments.
+    - **Wait:** The user said "Look at how this app is able to use the Gemini AI and replicate that here."
+    - **Observation:** The model name used in the example is `'models/gemini-flash-latest'`. I used `'gemini-1.5-flash'`.
+    - **However:** The error is `module 'google.generativeai' has no attribute 'GenerativeModel'`. This error happens *before* the model name is even used. It happens at the class instantiation or reference.
+    - **Wait:** Is it possible `bowlingAssistantApp.py` is running in a different environment? The user said "I added bowlingAssistantApp.py to the examples folder". They didn't say they *ran* it successfully *in this session*. They just said "Look at how this app is able to use...".
+    - **Hypothesis:** The user *thinks* it works or it worked elsewhere. But the error `AttributeError: module 'google.generativeai' has no attribute 'GenerativeModel'` is definitive: the installed library version does not have that class.
+    - **Wait:** Maybe the user has a file named `google.py` in their project root? I checked the file list earlier and didn't see it.
+    - **Let's check `bgInsertPrintOrganizer.py` imports again.**
+      ```python
+      import google.generativeai as genai
+      ```
+      And usage:
+      ```python
+      return genai.GenerativeModel('gemini-1.5-flash')
+      ```
+    - **Let's check `bowlingAssistantApp.py` imports.**
+      ```python
+      import google.generativeai as genai
+      ```
+      And usage:
+      ```python
+      model = genai.GenerativeModel('models/gemini-flash-latest')
+      ```
+    - **It is identical.**
+    - **Maybe:** The user has `google` namespace package issues.
+    - **Plan:** I will try to use the `requests` library to call the Gemini API directly via REST. This bypasses the python library version issues entirely. This is a robust fallback.
+    - **API Endpoint:** `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}`.
+    - **Payload:** `{"contents": [{"parts": [{"text": prompt}]}]}`.
+- **Status:** Switched to REST API. User says app is running but:
+    1.  Evaluating *all* games, not just top 20.
+    2.  AI Summary shows "AI Config Error".
+    3.  Button says "Done", wants "Printed".
+    4.  Link is merged with title, wants separate column.
+    5.  Wants collapsible rows (expander) for details.
+    6.  Wants a button in config to pop open printed list (instead of just sidebar expander?).
+- **Analysis of "AI Config Error":**
+    - The code checks `if not api_key: return 0, "Missing API Key"`.
+    - If it returns "AI Config Error", it means `evaluate_insert_with_ai` failed inside the `try/except` block or `api_key` was missing but handled differently?
+    - Wait, I see `return 5, f"AI Error: {str(e)[:50]}"` in the exception handler.
+    - If it says "AI Config Error", where is that string?
+    - Ah, in the *previous* version (using library) it was `if not model: return 0, "AI Config Error"`.
+    - In the *current* REST version, I don't see "AI Config Error" string.
+    - **Wait:** The user might be seeing cached results from the *previous* run (when the library failed).
+    - **Fix:** I need to clear the cache or force re-evaluation if the summary is "AI Config Error".
+- **Analysis of "Evaluating All Games":**
+    - `process_ai_evaluations` has `if count >= limit: break`.
+    - But if `st.rerun()` happens, it reloads.
+    - If `save_json_to_azure` works, the `AI_Evaluated` flag should be true.
+    - If the user sees it evaluating *all*, maybe the save isn't working, or the loop logic is flawed.
+    - **Correction:** I implemented the "infinite loop" fix plan: use `st.session_state` to track if batch has run.
+- **UI Changes:**
+    - Use `st.expander` for each game row.
+    - Title of expander: `Game Name | Plays: X | Priority: Y`.
+    - Inside expander:
+        - Columns:
+            - Col 1: Link to Model (separate).
+            - Col 2: AI Score & Summary.
+            - Col 3: Buttons (Printed, Re-Eval).
+    - Change "Done" to "Printed".
+    - Add "Show Printed Games" button in sidebar (or main area?) -> User said "in the config area".
+- **Implementation:**
+    - Updated `bgInsertPrintOrganizer.py` to incorporate all UI changes and the infinite loop fix.
+    - Restored `get_printed_games` which was accidentally deleted.
+    - Added logic to retry "AI Config Error" items.
+- **Issue:** User reports `AI API Error: 404`.
+- **Cause:** The REST API endpoint URL might be incorrect or the model name is wrong.
+- **URL Used:** `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}`
+- **Verification:** The model name `gemini-1.5-flash` is correct for the Python SDK, but for the REST API, it might be `gemini-1.5-flash-latest` or just `gemini-1.5-flash`.
+- **Wait:** The 404 usually means "Model not found" or "Method not found".
+- **Let's check the docs (mental check):** The endpoint is `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
+- **Maybe:** The model name needs to be `gemini-1.5-flash-latest` or `gemini-pro`.
+- **Let's try `gemini-1.5-flash-latest`** as used in the user's example (`models/gemini-flash-latest`).
+- **Wait:** The user's example used `models/gemini-flash-latest`.
+- **Correction:** I should use `gemini-1.5-flash-latest` or `gemini-1.5-flash`.
+- **Actually:** 404 can also mean the API key is invalid for that specific endpoint/model (though usually that's 403).
+- **Let's try a safer model name:** `gemini-pro` is the most standard. Or `gemini-1.5-flash`.
+- **Wait:** The user's example code used `genai.GenerativeModel('models/gemini-flash-latest')`. This maps to `models/gemini-flash-latest` in the API.
+- **So the URL should be:** `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent`.
+- **Wait:** I used `gemini-1.5-flash`. Maybe that alias doesn't exist in the REST API directly without `models/` prefix?
+- **Let's try:** `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`.
+- **If that failed (404),** maybe I need to use `gemini-pro`.
+- **Plan:** I will update the code to try a few known model names if the first one fails. Or just switch to `gemini-pro` which is usually available.
+- **Better Plan:** Use `gemini-1.5-flash` but ensure the URL is correct.
+- **Wait:** The error might be because I didn't include `models/` in the path variable but the API expects it? No, the docs say `models/{model}`.
+- **Let's try `gemini-1.5-flash-latest`**.
+- **Update:** User still gets 404.
+- **Action:** I've updated the code to try a list of models: `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-1.0-pro`. This should cover the bases.
+- **Issue:** User reports `AI API Error (models/gemini-flash-latest): 429`.
+- **Cause:** 429 means "Too Many Requests". The user is hitting the rate limit of the free Gemini API tier.
+- **Analysis:** The code processes 20 items in a loop with `time.sleep(1)`. This might be too fast for the free tier, or the user has already exhausted their quota for the minute/day.
+- **Fix:** Increase the sleep time between requests. The free tier has a limit of 15 requests per minute (RPM).
+- **Calculation:** 60 seconds / 15 requests = 4 seconds per request.
+- **Plan:** Increase `time.sleep(1)` to `time.sleep(5)` to be safe (12 RPM).
+- **Also:** Handle 429 gracefully by stopping the batch early instead of erroring out all subsequent items.

@@ -323,3 +323,34 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
 - **Implementation:**
     - In `main`, when iterating `priority_games`, check if `AI_Summary` contains "AI API Error" and "404".
     - If so, reset `AI_Evaluated` to `False`, `AI_Score` to 0, and `AI_Summary` to "Pending Retry...".
+- **New Request:**
+    1.  **Manual Priority:** Add a "Set as Top Priority" button.
+        - This should move the game to the top of the list.
+        - Multiple manually prioritized games should be sorted by their original priority (or just grouped at the top).
+        - **Implementation:** Add a boolean flag `Manual_Priority` to the game data. Sort logic: `(Manual_Priority desc, Priority_Score desc)`.
+    2.  **Model Fallback for Rate Limits:**
+        - If 429 is hit, try a different model (e.g., `gemini-2.0-flash-lite-preview-02-05` or similar).
+        - User specifically asked for `2.5 Flash Lite`. I need to check if that exists. It's likely `gemini-2.0-flash-lite` or similar.
+        - **Plan:** Update `evaluate_insert_with_ai` to accept a list of models to try. If one returns 429, try the next one in the list.
+        - **Models to try:** `gemini-1.5-flash`, `gemini-2.0-flash-lite-preview-02-05` (if valid), `gemini-1.5-pro`.
+        - **Note:** `gemini-2.0-flash-lite` might be in preview. I should check the exact name or just try it.
+        - **Refinement:** The user said "I am willing to add Billing to my account if necessary". This implies they might want to use paid tier if free tier fails, but switching models is a good first step.
+- **Status:** Implemented Manual Priority and Model Fallback.
+- **Issue:** User reports `AI Error: All models failed (404/429/Error)`.
+- **Cause:** All models in the list failed. Likely a global rate limit or API key issue.
+- **Action:** Implemented detailed error logging to Azure (`error_log.json`) and a UI alert to view logs.
+- **New Request:**
+    - User added billing.
+    - Update app to use `gemini-2.0-flash-lite-preview-02-05` (user called it `2.5 Flash Lite` but likely means 2.0 Flash Lite) as default.
+    - Never use Pro models.
+    - Allowed to fallback to other Flash models if Lite fails.
+    - Show message at top when a non-default model is used.
+- **Plan:**
+    - Update `models_to_try` list: `["gemini-2.0-flash-lite-preview-02-05", "gemini-1.5-flash"]`. Remove Pro models.
+    - In `evaluate_insert_with_ai`, return the `used_model_name` along with score/summary.
+    - In `main`, check if `used_model_name` != default. If so, add to a list of "fallback warnings".
+    - Display warning at top: "Used fallback model X for game Y".
+    - **Note:** The user said "Show message at the top when another model is used". This implies a global warning or per-game warning. A global warning "Warning: Used fallback model gemini-1.5-flash for 3 games" is cleaner.
+- **Correction:** User explicitly requested `gemini-2.5-flash-lite`.
+- **Action:** Updated `MODELS_TO_TRY` to include `gemini-2.5-flash-lite` as default, plus `gemini-1.5-flash`, `gemini-1.5-flash8b`, `gemini-2.5-flash`.
+- **Feature:** Added notification at the top during AI queries showing which model is being used.

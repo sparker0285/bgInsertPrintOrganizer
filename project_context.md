@@ -11,22 +11,26 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
   2. Thingiverse.com
   3. Printables.com
 - **Game Prioritization:**
-  - High priority on games played recently (`last_played` date is available).
-  - If `last_played` is not available, the game is low priority.
-  - The app should eventually consider community recommendations (from BGG forums, Reddit, etc.) to define "good" inserts, but for now, it will use on-site metrics like downloads, likes, and makes.
-- **Exclusion List:** A file named `printed_games.txt` will be used to exclude games for which inserts have already been printed.
+  - The app uses a "Priority Score" to rank games.
+  - The score is a weighted combination of total play count (60% weight) and recency of play (40% weight).
+  - The top 10 games based on this score are recommended.
+- **Insert Quality:**
+  - The app attempts to find the "best" insert by scraping the number of "likes" from Thingiverse and Printables search results.
+  - It provides a direct link to the insert with the most likes.
+  - For MakerWorld, which uses dynamic loading, the app falls back to providing a link to the search results page.
+- **Exclusion List:** A file named `printed_games.txt` is used to exclude games for which inserts have already been printed.
+- **Secrets Management:** The BGG API Key is stored in and read from a `.streamlit/secrets.toml` file, which is excluded from Git via `.gitignore`.
 - **Workflow:** 
   - The agent should **not** automatically run the Streamlit application after making file changes. It should only save the files and wait for an explicit request to run the app.
-  - When asked to run the app, the agent should use `Start-Process` in PowerShell to run Streamlit in the background.
-- **GitHub Reference:** The user has a repository named `BGPicker_webapp` on their GitHub account that can be used as a reference for interacting with BGG APIs.
+  - When asked to run the app, the agent should use `Start-Process` in PowerShell to run Streamlit in the background, using the full path to the executable in the `.venv` to avoid PATH issues.
 
 ## Current Status
 
-- The `boardgamegeek2` dependency issue has been resolved by switching to direct `requests` calls to the BGG API.
-- The app is now encountering a `401 Unauthorized` error when fetching BGG data, indicating an API key is required.
-- The next step is to get the user's GitHub repository URL to understand how to implement the API key.
-- The project has been initialized with `bgInsertPrintOrganizer.py`, `requirements.txt`, and `printed_games.txt`.
-- A virtual environment `.venv` has been created.
-- The application was facing a persistent `ModuleNotFoundError: No module named 'boardgamegeek2'`.
-- **Resolution:** The `boardgamegeek2` dependency has been removed from `requirements.txt` and the application has been rewritten to use the `requests` library and the BGG XML API v2 directly, resolving the environment issue.
-- The app is now ready to be tested by the user.
+- **Search Functionality:** A search bar has been added to allow users to search their entire BGG collection.
+- **Printed Games Display:** Games listed in `printed_games.txt` are now displayed in a separate, expandable section at the bottom of the app, clearly marked as "PRINTED". They are sorted alphabetically.
+- The application has been significantly refactored to implement the new priority-based recommendation engine.
+- **Last Played Date:** The app now uses the BGG `plays` endpoint to get accurate "last played" dates, resolving an issue where recently played games were not being correctly identified.
+- **Error Handling:** The XML parsing logic has been made more robust to handle cases where games in the BGG collection are missing data fields (like `lastmodified` or `numplays`), which was causing `AttributeError` crashes.
+- **Authentication:** The app now correctly authenticates with the BGG API using a Bearer Token (API Key) provided via the `.streamlit/secrets.toml` file. This resolved the `401 Unauthorized` errors.
+- **Environment:** The app is now consistently run using the Python virtual environment, resolving the "'streamlit' is not recognized" error.
+- The app is currently running with the new logic for the user to evaluate.

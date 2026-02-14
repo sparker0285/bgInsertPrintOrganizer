@@ -521,7 +521,7 @@ def main():
             if updated:
                 save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
 
-        st.subheader("Top Games to Find Inserts For")
+        st.subheader(f"Top Games to Find Inserts For ({len(final_list)} shown)")
         
         if not final_list and search_query:
             st.warning(f"No games found matching '{search_query}'.")
@@ -531,7 +531,7 @@ def main():
         for i, item in enumerate(final_list):
             # Expander Header
             priority_icon = "⭐ " if item.get("Manual_Priority") else ""
-            header_text = f"{priority_icon}**{item['Game Title']}** | Plays: {item['Plays']} | Priority: {item['Priority_Score']}"
+            header_text = f"#{i+1} {priority_icon}**{item['Game Title']}** | Plays: {item['Plays']} | Priority: {item['Priority_Score']}"
             
             with st.expander(header_text, expanded=False):
                 c1, c2, c3 = st.columns([2, 3, 1])
@@ -595,7 +595,7 @@ def main():
                             item["AI_Score"] = score
                             item["AI_Summary"] = summary
                             item["AI_Evaluated"] = True
-                            item["Candidate_URL"] = candidate_url
+                            item["Candidate_URL"] = candidate.url
                             item["Priority_Score"] = item["Plays"] + item["AI_Score"]
                             if colors: item["Colors"] = colors
                             save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)

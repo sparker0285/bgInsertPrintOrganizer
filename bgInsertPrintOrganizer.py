@@ -363,7 +363,7 @@ def main():
 
     # Load Data
     printed_games_names = get_list_from_azure(AZURE_PRINTED_BLOB, "printed_games.txt")
-    excluded_games = get_list_from_azure(AZURE_EXCLUDED_BLOB)
+    excluded_games_names = get_list_from_azure(AZURE_EXCLUDED_BLOB)
     collection_data = load_json_from_azure(AZURE_COLLECTION_BLOB)
     search_results = load_json_from_azure(AZURE_SEARCH_RESULTS_BLOB) or []
 
@@ -416,20 +416,20 @@ def main():
         st.divider()
         
         st.write("### Never Print (Excluded)")
-        if excluded_games:
-            for g in excluded_games:
+        if excluded_games_names:
+            for g in excluded_games_names:
                 c1, c2 = st.columns([4, 1])
                 c1.write(g)
                 if c2.button("❌", key=f"del_excl_{g}"):
-                    excluded_games.remove(g)
-                    save_json_to_azure(excluded_games, AZURE_EXCLUDED_BLOB)
+                    excluded_games_names.remove(g)
+                    save_json_to_azure(excluded_games_names, AZURE_EXCLUDED_BLOB)
                     st.rerun()
         else:
             st.write("None")
 
     # Bulk AI Processing
     with st.sidebar.expander("AI Bulk Processing"):
-        bulk_qty = st.number_input("Games to Process", min_value=1, max_value=100, value=10)
+        bulk_qty = st.number_input("Games to Process", min_value=1, max_value=1000, value=10)
         if st.button("Start Bulk Processing"):
             st.session_state.bulk_processing = True
             st.session_state.bulk_qty = bulk_qty
@@ -451,24 +451,16 @@ def main():
         if search_query:
             games = [game for game in games if search_query.lower() in game.name.lower()]
 
-        # Separate printed games
+        # Separate games into categories
         printed_games_full = [g for g in games if g.name in printed_games_names]
-        games = [g for g in games if g.name not in printed_games_names]
-
-        cutoff = datetime.now() - timedelta(days=DAYS_SINCE_LAST_PLAY)
+        excluded_games_full = [g for g in games if g.name in excluded_games_names]
         
-        priority_games = [
+        unprinted_games = [
             g for g in games 
-            if g.last_played and g.last_played > cutoff 
-            and g.name not in excluded_games
+            if g.name not in printed_games_names and g.name not in excluded_games_names
         ]
-        
-        if not priority_games and not search_query: # Don't show this if user is searching
-            priority_games = sorted(
-                [g for g in games if g.name not in excluded_games], 
-                key=lambda x: x.num_plays, 
-                reverse=True
-            )[:50]
+
+        priority_games = unprinted_games
         
         cached_map = {item["Game Title"]: item for item in search_results}
         final_list = []
@@ -578,8 +570,8 @@ def main():
                         st.rerun()
                     
                     if st.button("🚫 Never Print", key=f"excl_{i}", help="Exclude from future lists"):
-                        excluded_games.append(item['Game Title'])
-                        save_json_to_azure(excluded_games, AZURE_EXCLUDED_BLOB)
+                        excluded_games_names.append(item['Game Title'])
+                        save_json_to_azure(excluded_games_names, AZURE_EXCLUDED_BLOB)
                         new_results = [r for r in final_list if r['Game Title'] != item['Game Title']]
                         save_json_to_azure(new_results, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
@@ -595,18 +587,26 @@ def main():
                             item["AI_Score"] = score
                             item["AI_Summary"] = summary
                             item["AI_Evaluated"] = True
-                            item["Candidate_URL"] = candidate.url
+                            item["Candidate_URL"] = candidate_url
                             item["Priority_Score"] = item["Plays"] + item["AI_Score"]
                             if colors: item["Colors"] = colors
                             save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
 
-        # --- Display Printed Games ---
+        # --- Display Categorized Lists ---
         if printed_games_full:
             st.subheader("Printed Games")
             for game in sorted(printed_games_full, key=lambda x: x.name):
                 with st.expander(f"{game.name}"):
                     st.write("**Status: PRINTED**")
+                    st.write(f"Plays: {game.num_plays}")
+                    st.write(f"Last Played: {game.last_played.strftime('%Y-%m-%d') if game.last_played else 'N/A'}")
+        
+        if excluded_games_full:
+            st.subheader("Never Print Games")
+            for game in sorted(excluded_games_full, key=lambda x: x.name):
+                with st.expander(f"{game.name}"):
+                    st.write("**Status: EXCLUDED**")
                     st.write(f"Plays: {game.num_plays}")
                     st.write(f"Last Played: {game.last_played.strftime('%Y-%m-%d') if game.last_played else 'N/A'}")
 

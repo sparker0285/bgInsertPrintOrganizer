@@ -359,8 +359,10 @@ def main():
     st.set_page_config(layout="wide")
     st.title("Insert Curator")
     
+    search_query = st.text_input("Search all games in your collection:", "")
+
     # Load Data
-    printed_games = get_list_from_azure(AZURE_PRINTED_BLOB, "printed_games.txt")
+    printed_games_names = get_list_from_azure(AZURE_PRINTED_BLOB, "printed_games.txt")
     excluded_games = get_list_from_azure(AZURE_EXCLUDED_BLOB)
     collection_data = load_json_from_azure(AZURE_COLLECTION_BLOB)
     search_results = load_json_from_azure(AZURE_SEARCH_RESULTS_BLOB) or []
@@ -396,13 +398,13 @@ def main():
     # Manage Lists in Sidebar
     with st.sidebar.expander("Manage Lists"):
         st.write("### Already Printed")
-        if printed_games:
-            for g in printed_games:
+        if printed_games_names:
+            for g in printed_games_names:
                 c1, c2 = st.columns([4, 1])
                 c1.write(g)
                 if c2.button("❌", key=f"del_print_{g}"):
-                    printed_games.remove(g)
-                    save_json_to_azure(printed_games, AZURE_PRINTED_BLOB)
+                    printed_games_names.remove(g)
+                    save_json_to_azure(printed_games_names, AZURE_PRINTED_BLOB)
                     st.rerun()
         else:
             st.write("None")
@@ -440,18 +442,26 @@ def main():
     # Process Collection -> Priority List
     if collection_data:
         games = [BggGame.from_dict(d) for d in collection_data]
+        
+        # Apply search filter
+        if search_query:
+            games = [game for game in games if search_query.lower() in game.name.lower()]
+
+        # Separate printed games
+        printed_games_full = [g for g in games if g.name in printed_games_names]
+        games = [g for g in games if g.name not in printed_games_names]
+
         cutoff = datetime.now() - timedelta(days=DAYS_SINCE_LAST_PLAY)
         
         priority_games = [
             g for g in games 
             if g.last_played and g.last_played > cutoff 
-            and g.name not in printed_games 
             and g.name not in excluded_games
         ]
         
-        if not priority_games:
+        if not priority_games and not search_query: # Don't show this if user is searching
             priority_games = sorted(
-                [g for g in games if g.name not in printed_games and g.name not in excluded_games], 
+                [g for g in games if g.name not in excluded_games], 
                 key=lambda x: x.num_plays, 
                 reverse=True
             )[:50]
@@ -502,12 +512,18 @@ def main():
             st.rerun()
 
         # Normal Batch AI Evaluation (on load)
-        final_list, updated = process_ai_evaluations(final_list, limit=10, delay=5)
-        if updated:
-            save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
+        if not search_query: # Don't run AI evals when searching
+            final_list, updated = process_ai_evaluations(final_list, limit=10, delay=5)
+            if updated:
+                save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
 
         st.subheader("Top Games to Find Inserts For")
         
+        if not final_list and search_query:
+            st.warning(f"No games found matching '{search_query}'.")
+        elif not final_list:
+            st.info("No priority games to display.")
+
         for i, item in enumerate(final_list):
             # Expander Header
             priority_icon = "⭐ " if item.get("Manual_Priority") else ""
@@ -551,8 +567,8 @@ def main():
                         st.rerun()
                         
                     if st.button("✅ Printed", key=f"print_{i}", help="Mark as Printed"):
-                        printed_games.append(item['Game Title'])
-                        save_json_to_azure(printed_games, AZURE_PRINTED_BLOB)
+                        printed_games_names.append(item['Game Title'])
+                        save_json_to_azure(printed_games_names, AZURE_PRINTED_BLOB)
                         new_results = [r for r in final_list if r['Game Title'] != item['Game Title']]
                         save_json_to_azure(new_results, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
@@ -580,6 +596,16 @@ def main():
                             if colors: item["Colors"] = colors
                             save_json_to_azure(final_list, AZURE_SEARCH_RESULTS_BLOB)
                         st.rerun()
+
+        # --- Display Printed Games ---
+        if printed_games_full:
+            st.subheader("Printed Games")
+            for game in sorted(printed_games_full, key=lambda x: x.name):
+                with st.expander(f"{game.name}"):
+                    st.write("**Status: PRINTED**")
+                    st.write(f"Plays: {game.num_plays}")
+                    st.write(f"Last Played: {game.last_played.strftime('%Y-%m-%d') if game.last_played else 'N/A'}")
+
 
 if __name__ == "__main__":
     main()

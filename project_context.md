@@ -22,7 +22,8 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
 - **Data Persistence:** The app now uses Azure Blob Storage to cache the BGG collection. This avoids frequent API calls and potential authentication issues. The user provides an Azure Storage connection string in `secrets.toml`.
 
 ## Current Status
-
+- **Search Functionality:** A search bar has been added to allow users to search their entire BGG collection.
+- **Printed Games Display:** Games listed in `printed_games.txt` are now displayed in a separate, expandable section at the bottom of the app, clearly marked as "PRINTED". They are sorted alphabetically.
 - The `boardgamegeek2` dependency issue has been resolved by switching to direct `requests` calls to the BGG API.
 - The app is now encountering a `401 Unauthorized` error when fetching BGG data, indicating an API key is required.
 - The next step is to get the user's GitHub repository URL to understand how to implement the API key.
@@ -142,8 +143,7 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
 - **Let's try this:** I will modify the code to try `GenerativeModel` first, and if that fails (AttributeError), fall back to `genai.generate_text` or similar.
 - **Actually:** If the user just installed it, maybe they need to restart the Streamlit server? They probably did.
 - **Let's check `pip list`** if I could, but I can't.
-- **Hypothesis:** Maybe the package name is `google-generativeai` but the import is `google.generativeai`. That is correct.
-- **Maybe:** The user has a file named `google.py` or `google/generativeai.py` in their project that is shadowing the library? Unlikely in this structure.
+- **Hypothesis:** Maybe the user has a file named `google.py` or `google/generativeai.py` in their project that is shadowing the library? Unlikely in this structure.
 - **Let's try the legacy method.** It's safer if the environment is stubborn.
 - **Legacy Method:**
   ```python
@@ -326,7 +326,7 @@ This file tracks the context, decisions, and progress of the "Insert Curator" pr
 - **New Request:**
     1.  **Manual Priority:** Add a "Set as Top Priority" button.
         - This should move the game to the top of the list.
-        - Multiple manually prioritized games should be sorted by their original priority (or just grouped at the top).
+        - Multiple manually prioritized games should be grouped at the top.
         - **Implementation:** Add a boolean flag `Manual_Priority` to the game data. Sort logic: `(Manual_Priority desc, Priority_Score desc)`.
     2.  **Model Fallback for Rate Limits:**
         - If 429 is hit, try a different model (e.g., `gemini-2.0-flash-lite-preview-02-05` or similar).

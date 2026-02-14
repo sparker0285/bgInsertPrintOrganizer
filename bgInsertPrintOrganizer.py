@@ -367,6 +367,10 @@ def main():
     collection_data = load_json_from_azure(AZURE_COLLECTION_BLOB)
     search_results = load_json_from_azure(AZURE_SEARCH_RESULTS_BLOB) or []
 
+    # Display total games count
+    if collection_data:
+        st.write(f"Total games in collection: {len(collection_data)}")
+
     # Warnings & Alerts
     if st.session_state.get("has_ai_error", False):
         with st.expander("⚠️ AI Errors Detected", expanded=True):
